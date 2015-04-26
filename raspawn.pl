@@ -1,5 +1,4 @@
 #!/usr/bin/perl -w
-#!/usr/bin/perl -w
 # This code is licensed under GPL 2.0
 
 use strict;
@@ -8,7 +7,7 @@ use List::Util qw(sum);
 use Fcntl;
 use Getopt::Std;
 use Proc::Background;
-use globals;
+#use globals;
 
 my $usage=<<END;
 
@@ -24,7 +23,8 @@ of files/directories in a given directory untill all are processed.
 
 Usage:
   -f - file containing list of commands to execute. Alternatively, use -0, 
-       -1 and -2 options.
+       -1 and -2 options. Each line is treated as a command.
+       lines starting with # are treated as comments and skipped
   -0 - command to execute. E.g. 'perl blah.pl -s -i '
   -1 - directory where files (or directories) habituate.
        e.g. ../directory/
@@ -78,33 +78,23 @@ with options of the command executed.)
 
 Examples: 
 
-     perl raspawn.pl -f bach_file -5 70
-  This executes all commands in the "batch_file" file while keeping
-  toal CPU utilization below 70% approximately.
+  perl raspawn.pl -f bach_file -5 70
+    This executes all commands in the "batch_file" file while keeping
+    toal CPU utilization below 70% approximately.
 
-  This executes "ls -la" command on three xml files in ../directory/.
-  This results in three commands:
+  perl raspawn.pl -0 'sleep 10; ls -la' -1 './' -2 '.*xml$' -8 3
+    This executes 'sleep 10; ls -la' command on three xml files in the current directory.
 
-     perl raspawn.pl -0 'ls -la' -1 '../directory/' -2 '.*xml' -8 3
+  perl raspawn.pl -0 'perl blah.pl -i ' -1 '../directory/' -2 'A.*txt'
+    Executes 'perl blah.pl -s -i' command on all txt files starting
+    with A in ../directory/ like so:
+      perl blah.pl -s -i ../directory/file1.txt
+      perl blah.pl -s -i ../directory/file2.txt
+      ...
 
-  This executes "ls -la" command on three xml files in ../directory/.
-  This results in three commands:
-  ls -la ../directory/blah1.xml
-  ls -la ../directory/blah2.xml
-  ls -la ../directory/blah3.xml
-
-    perl raspawn.pl -0 'perl blah.pl -i ' -1 '../directory/' -2 'A.*txt'
-
-  Executes 'perl blah.pl -s -i' command on all txt files starting
-  with A in ../directory/ like so:
-  perl blah.pl -s -i ../directory/file1.txt 
-  perl blah.pl -s -i ../directory/file2.txt
-  ...
-
-    perl raspawn.pl -0 'perl blah.pl -i ' -1 ../directory/ -3 'A.*txt' -3 60
-
-  Executes 'perl blah.pl -s -i ../directory/' command on all txt files
-  starting with A in ../directory/ while keeping memory usage below around 60%
+  perl raspawn.pl -0 'perl blah.pl -i ' -1 ../directory/ -3 'A.*txt' -3 60
+    Executes 'perl blah.pl -s -i ../directory/' command on all txt files
+    starting with A in ../directory/ while keeping memory usage below around 60%
 
 
 END
@@ -116,20 +106,15 @@ my $warmup = 1;
 
 my $MAX_PROC     = 128; #maximum number of active processes that can be spawned
 
-#my $MAX_UTIL_DISK = 90; #maximum disk utilization spawn.pl tries not to exceed. In %.
-my $MAX_UTIL_DISK = 100; #maximum disk utilization spawn.pl tries not to exceed. In %.
+my $MAX_UTIL_DISK = 90; #maximum disk utilization we try not to exceed. In %.
 
-#my $MAX_UTIL_MEM  = 80; #maximum memory utilization spawn.pl tries not to exceed. In %.
-my $MAX_UTIL_MEM  = 100; #maximum memory utilization spawn.pl tries not to exceed. In %.
+my $MAX_UTIL_MEM  = 80; #maximum memory utilization we try not to exceed. In %.
 
-#my $MAX_UTIL_CPU  = 95; #maximum cpu utilization spawn.pl tries not to exceed
-my $MAX_UTIL_CPU  = 100; #maximum cpu utilization spawn.pl tries not to exceed
+my $MAX_UTIL_CPU  = 95; #maximum cpu utilization we try not to exceed
 
-#my $SLEEP_PERIOD  = 5;	#between spawning new process
-my $SLEEP_PERIOD  = 1;	#between spawning new process
+my $SLEEP_PERIOD  = 5;	#between spawning new process
 
-#my $PRINT_PERIOD  = 3; #print list of active processes every this many sleep periods
-my $PRINT_PERIOD  = 1; #print list of active processes every this many sleep periods
+my $PRINT_PERIOD  = 3;  #print list of active processes every this many sleep periods
 
 my $LIMIT = -1; #Stops when this many spawned. If -1, doesn't stop until all
 					 #files in the directory processed.
@@ -185,9 +170,9 @@ time_init();
 my @cl; #command list - array of commands (with all the arguments supplied...) to execute
 @cl = create_command_list();
 
-#foreach my $c (@cl) {
-#	print "$c\n";
-#}
+# foreach my $c (@cl) {
+# 	print "$c\n";
+# }
 
 spawn (@cl);
 
@@ -215,8 +200,9 @@ sub  create_command_list {
 		print "input file: $opt_f\n";
 		while(<FILE_I>) {
 			my $l = $_;
-			#skip comment lines (starting with #)
-			unless ($l =~ m/\s*#/) {
+			#skip comment lines (starting with #) and empty lines
+			unless (($l =~ m/\s*#/) or ($l =~ m/^\s*$/)) {
+				$l =~ s/\n$//;	  #chop off newline
 				push (@cl, $l);
 			}
 		}
@@ -269,7 +255,7 @@ sub spawn {
 	my ($cu, $mu, $du, $su, $un); #cpu util, memory util, disk util, swap usage, unit
 
 	while (scalar @cl or proc_active_n()) { #run until finished with input list and
-		                                      #no more active processes
+		                                     #no more active processes
 		if (scalar @cl) {		  #not finished with input list?
 
 			$cu = util_cpu();
@@ -293,12 +279,10 @@ sub spawn {
 				if ($warmup) {
 					#to ensure the 1st process had enough time to start working.
 					#Sometimes, if the process needs to read a huge file, it will
-               #not manage to do it before other processes are started which 
+               #not manage to do it before other processes are started which
 					#then clobber each other
-					print "\nTESTING - RETURN VARIABLES TO DEFAULT ABOVE AND HERE\n";
 					print "\nWarming up. Waiting 10s after 1st process spawned\n";
-					#sleep(10);
-					sleep(1);
+					sleep(10);
 					$warmup = 0;
 				}
 			}
@@ -316,7 +300,7 @@ sub spawn {
 					"DISK "   . sprintf("%3u", $du) . "%%, " .
 					  "SWAP "   . sprintf("%u",  $su) . "$un, " .
 						 "DONE $nf_finished, TO DO $n. NOW RUNNING " . scalar @proca . ".\n";
-			print_hash(" ", \%procf);
+			print_hash("  ", \%procf, "\n");
 			print "\n";
 	   }
 		sleep ($SLEEP_PERIOD);
@@ -349,11 +333,11 @@ sub proc_active_update {
 
 
 #returns array of names of input files (or directories)
-#e.g. list of all xml files in ../bulk/assignments/ directory
+#e.g. list of all xml files in ../bla directory
 ###################################################################################
 sub get_files_list {
 	my ($dir,	  #in: directory where files (or directories) habituate
-					  #e.g. ../bulk/assignments/
+					  #e.g. ../bla/
 		 $match	  #in: match string to recognize files
 					  #e.g. '.*xml$' (for ad20140204.xml)
 		) = @_;
@@ -448,8 +432,29 @@ sub util_disk {
 	return $hdu;
 }
 
+my $st; #start time
+my $pt; #previous time (that get_delta_time() was invoked)
+###################################################################################
+sub time_init {
+    $st = time();
+}
 
+#returns total time elapsed since init_time() was invoked
+###################################################################################
+sub time_get_total {
+	unless ($st) {
+		return -1;
+	}
+	return time() - $st; #total time
+}
 
+sub print_hash {
+	my ($tb,       #text before
+		 $hr,       #hash reference
+		 $ta        #text after
+		) = @_;
 
-
-
+	while ( my ($key, $value) = each(%$hr) ) {
+		print $tb . "$key => $value " . $ta;
+	}
+}
