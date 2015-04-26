@@ -1,4 +1,5 @@
 #!/usr/bin/perl -w
+#!/usr/bin/perl -w
 # This code is licensed under GPL 2.0
 
 use strict;
@@ -11,16 +12,19 @@ use globals;
 
 my $usage=<<END;
 
-raspawn.pl -0 'command' -1 'directory' -2 'regex' [-3 number]
-  [-4 number] [-5 number] [-6 number] [-7 number] [-8 number] [-9 number]
+raspawn.pl -f 'file_w_commands' -0 'command' -1 'directory' -2 'regex' [-3 mem_util]
+  [-4 disk_util] [-5 cpu_util] [-6 sleep_between] [-7 max_procs] [-8 total_procs] [-9 print_status_s]
+
 
 Resource Aware spawn.
 Spawns a number of processes while trying to keep resources
 utilization just below the maximum. Waits until there are enough system
-resources before spawning a new process. Spawns processes over a number 
+resources before spawning a new process. Spawns processes over a number
 of files/directories in a given directory untill all are processed.
 
 Usage:
+  -f - file containing list of commands to execute. Alternatively, use -0, 
+       -1 and -2 options.
   -0 - command to execute. E.g. 'perl blah.pl -s -i '
   -1 - directory where files (or directories) habituate.
        e.g. ../directory/
@@ -74,6 +78,13 @@ with options of the command executed.)
 
 Examples: 
 
+     perl raspawn.pl -f bach_file -5 70
+  This executes all commands in the "batch_file" file while keeping
+  toal CPU utilization below 70% approximately.
+
+  This executes "ls -la" command on three xml files in ../directory/.
+  This results in three commands:
+
      perl raspawn.pl -0 'ls -la' -1 '../directory/' -2 '.*xml' -8 3
 
   This executes "ls -la" command on three xml files in ../directory/.
@@ -105,233 +116,287 @@ my $warmup = 1;
 
 my $MAX_PROC     = 128; #maximum number of active processes that can be spawned
 
-my $MAX_UTIL_DISK = 90; #maximum disk utilization spawn.pl tries not to exceed. In %.
+#my $MAX_UTIL_DISK = 90; #maximum disk utilization spawn.pl tries not to exceed. In %.
+my $MAX_UTIL_DISK = 100; #maximum disk utilization spawn.pl tries not to exceed. In %.
 
-my $MAX_UTIL_MEM  = 80; #maximum memory utilization spawn.pl tries not to exceed. In %.
+#my $MAX_UTIL_MEM  = 80; #maximum memory utilization spawn.pl tries not to exceed. In %.
+my $MAX_UTIL_MEM  = 100; #maximum memory utilization spawn.pl tries not to exceed. In %.
 
-my $MAX_UTIL_CPU  = 95; #maximum cpu utilization spawn.pl tries not to exceed
+#my $MAX_UTIL_CPU  = 95; #maximum cpu utilization spawn.pl tries not to exceed
+my $MAX_UTIL_CPU  = 100; #maximum cpu utilization spawn.pl tries not to exceed
 
-my $SLEEP_PERIOD  = 5;          #between spawning new process
-my $PRINT_PERIOD  = 3; #print list of active processes every this many sleep periods
+#my $SLEEP_PERIOD  = 5;	#between spawning new process
+my $SLEEP_PERIOD  = 1;	#between spawning new process
+
+#my $PRINT_PERIOD  = 3; #print list of active processes every this many sleep periods
+my $PRINT_PERIOD  = 1; #print list of active processes every this many sleep periods
 
 my $LIMIT = -1; #Stops when this many spawned. If -1, doesn't stop until all
-                #files in the directory processed.
+					 #files in the directory processed.
 
-my $nf_start_ok  = 0;        #number of files started fine
-my $nf_start_err = 0;        #number of files which did not start fine
-my $nf_finished  = 0;        #number of files which processed fine
-my $nf_remaining = 0;        #number of files still left to do
+my $nf_start_ok  = 0;		  #number of files started fine
+my $nf_start_err = 0;		  #number of files which did not start fine
+my $nf_finished  = 0;		  #number of files which processed fine
+my $nf_remaining = 0;		  #number of files still left to do
 
-my @proca;     #array of spawned processes
-my %procf;     #hash of names of files active processes are processing
-               #key: pid, value: file name
+my @proca;		#array of spawned processes
+my %procf;		#hash of names of files active processes are processing
+					#key: pid, value: command
 
-our ($opt_0, $opt_1, $opt_2, $opt_3, $opt_4, $opt_5, $opt_6, $opt_7, $opt_8, $opt_9);
+our ($opt_f, $opt_0, $opt_1, $opt_2, $opt_3, $opt_4, $opt_5, $opt_6, $opt_7, $opt_8, $opt_9);
 
-getopts('0:1:2:3:4:5:6:7:8:9:');
+getopts('f:0:1:2:3:4:5:6:7:8:9:');
 
-unless ($opt_0 and $opt_1 and $opt_2) {
-   print $usage;
+unless ($opt_f or ($opt_0 and $opt_1 and $opt_2)) {
+	print $usage;
+	exit;
 }
 
 if ($opt_3) {
-   $MAX_UTIL_MEM = $opt_3;
+	$MAX_UTIL_MEM = $opt_3;
 }
 
 if ($opt_4) {
-   $MAX_UTIL_DISK = $opt_4;
+	$MAX_UTIL_DISK = $opt_4;
 }
 
 if ($opt_5) {
-   $MAX_UTIL_CPU  = $opt_5;
+	$MAX_UTIL_CPU  = $opt_5;
 }
 
 if ($opt_6) {
-   $SLEEP_PERIOD = $opt_6;
+	$SLEEP_PERIOD = $opt_6;
 }
 
 if ($opt_7) {
-   $MAX_PROC = $opt_7;
+	$MAX_PROC = $opt_7;
 }
 
 if ($opt_8) {
-   $LIMIT = $opt_8;
+	$LIMIT = $opt_8;
 }
 
 if ($opt_9) {
-   $PRINT_PERIOD = $opt_9;
+	$PRINT_PERIOD = $opt_9;
 }
 
 time_init();
 
-spawn ($opt_0, $opt_1, $opt_2);
+my @cl; #command list - array of commands (with all the arguments supplied...) to execute
+@cl = create_command_list();
+
+#foreach my $c (@cl) {
+#	print "$c\n";
+#}
+
+spawn (@cl);
 
 print "Processed $nf_finished files. Crapped out on $nf_start_err files.\n" .
   "Spent " . time_get_total() ." seconds\n";
 
 if ($nf_remaining) {
-   print "Error: there should be no files left to do. It seems that $nf_remaining " .
-     "have not been processed\n";
+	print "Error: there should be no files left to do. It seems that $nf_remaining " .
+	  "have not been processed\n";
 }
 
 exit;
 
-#spawns up to $MAX_PROC processes at a time which execute $cmd command
-#over all files in the $dir directory which match the $match mask
+
+
+#creates list of commands to execute
+#returns array with the list
+###################################################################################
+sub  create_command_list {
+
+	my @cl; #command list
+
+	if ($opt_f) {
+		open FILE_I, "< $opt_f" or print "\nERROR: Can't open $opt_f.\n\n";
+		print "input file: $opt_f\n";
+		while(<FILE_I>) {
+			my $l = $_;
+			#skip comment lines (starting with #)
+			unless ($l =~ m/\s*#/) {
+				push (@cl, $l);
+			}
+		}
+
+		if ($LIMIT > -1) {  #(must chop off before reverse(), eh)
+			$#cl = $LIMIT - 1
+		}
+		@cl = reverse(@cl); #to get it in the same order as in the input file
+
+	} else {
+		#create the list of commands from the given command, directory and mask
+
+		my $cmd   = $opt_0; #command. E.g. 'perl ass.pl -s -i '
+		my $dir   = $opt_1; #directory where files (or directories) habituate.
+		#e.g. ../directory/
+		my $match = $opt_2; #match string to recognize files to process
+		#e.g. '.*xml$' (for file1.xml)
+
+		#make sure directory name finishes with "/"
+		unless ($dir =~ m/\/$/) {
+			$dir = $dir . "/";
+		}
+
+		my @ifl;						 #input file list
+		@ifl = get_files_list($dir, $match);
+		print "\nFOUND " . scalar @ifl . " " . $match . " FILES TO PROCESS IN " . $dir . "\n";
+
+		foreach my $if (@ifl) {  #input file
+			my $fc = $cmd . " " .  $dir . $if; #full command
+			push (@cl, $fc);
+		}
+		if ($LIMIT > -1) {
+			$#cl = $LIMIT - 1
+		}
+	}
+
+	return @cl;
+}
+
+#spawns up to $MAX_PROC processes at a time which execute commands in the list
 ###################################################################################
 sub spawn {
-   my ($cmd,    #in: command. E.g. 'perl ass.pl -s -i '
-       $dir,    #in: directory where files (or directories) habituate.
-                #e.g. ../directory/
-       $match   #in: match string to recognize files to process
-                #e.g. '.*xml$' (for file1.xml)
-      ) = @_;
+	my (@cl     #in: command list
+		) = @_;
 
-   #make sure directory name finishes with "/"
-   unless ($dir =~ m/\/$/) {
-      $dir = $dir . "/";
-   }
+	$nf_remaining = scalar @cl;
 
-   my @ifl;                     #input file list
-   @ifl = get_input_list($dir, $match);
-   print "\nFOUND " . scalar @ifl . " " . $match . " FILES TO PROCESS IN " . $dir . "\n";
-   if ($LIMIT > -1) {
-      $#ifl = $LIMIT - 1
-   }
-   $nf_remaining = scalar @ifl;
+	my $i = 0;
 
-   my $i = 0;
+	my ($cu, $mu, $du, $su, $un); #cpu util, memory util, disk util, swap usage, unit
 
-   my ($cu, $mu, $du, $su, $un); #cpu util, memory util, disk util, swap usage, unit
+	while (scalar @cl or proc_active_n()) { #run until finished with input list and
+		                                      #no more active processes
+		if (scalar @cl) {		  #not finished with input list?
 
-   while (scalar @ifl or proc_active_n()) { #run until finished with input list and
-                                            #no more active processes
-      if (scalar @ifl) {        #not finished with input list?
+			$cu = util_cpu();
+			$du = util_disk();
+			($mu, $su, $un) = util_mem();
 
-         $cu = util_cpu();
-         $du = util_disk();
-         ($mu, $su, $un) = util_mem();
+			if ((proc_active_n() < $MAX_PROC) and ($cu < $MAX_UTIL_CPU) and
+				 ($mu < $MAX_UTIL_MEM) and ($du < $MAX_UTIL_DISK)) {
 
-         if ((proc_active_n() < $MAX_PROC) and ($cu < $MAX_UTIL_CPU) and
-             ($mu < $MAX_UTIL_MEM) and ($du < $MAX_UTIL_DISK)) {
-
-            my $if = pop(@ifl);                #input file
-            my $fc = $cmd . " " .  $dir . $if; #full command
-            my $proc = Proc::Background->new($fc);
-            if ($proc) {
-               push(@proca, $proc);
-               $procf{$proc->pid()} = $if;
-               print "STARTED:pid " . $proc->pid() . " $fc \n";
-               ++$nf_start_ok;
-            } else {
-               print "Error: could not spawn process: $fc \n";
-               ++$nf_start_err;
-            }
-            if ($warmup) {
-               #to ensure the 1st process had enough time to start working.
-               #Sometimes, if the process needs to read a huge file, it will
+				my $fc = pop(@cl);					  #full command
+				my $proc = Proc::Background->new($fc);
+				if ($proc) {
+					push(@proca, $proc);
+					$procf{$proc->pid()} = $fc;
+					print "STARTED:pid " . $proc->pid() . " $fc \n";
+					++$nf_start_ok;
+				} else {
+					print "Error: could not spawn process: $fc \n";
+					++$nf_start_err;
+				}
+				if ($warmup) {
+					#to ensure the 1st process had enough time to start working.
+					#Sometimes, if the process needs to read a huge file, it will
                #not manage to do it before other processes are started which 
-               #then clobber each other
-               print "\nWarming up. Waiting 10s after 1st process spawned\n";
-               sleep(10);
-               $warmup = 0;
-            }
-         }
-      }
+					#then clobber each other
+					print "\nTESTING - RETURN VARIABLES TO DEFAULT ABOVE AND HERE\n";
+					print "\nWarming up. Waiting 10s after 1st process spawned\n";
+					#sleep(10);
+					sleep(1);
+					$warmup = 0;
+				}
+			}
+		}
 
-      proc_active_update();
+		proc_active_update();
 
-      $i++;
-      my $t = time_get_total();
-      if ($i % $PRINT_PERIOD == 0) {
-         my $n = $nf_remaining - $nf_start_err;
-         printf "ELAPSED " . $t . "s. " .
-           "CPU "    . sprintf("%3u", $cu) . "%%, " .
-             "MEMORY " . sprintf("%3u", $mu) . "%%, " .
-               "DISK "   . sprintf("%3u", $du) . "%%, " .
-                 "SWAP "   . sprintf("%u",  $su) . "$un, " .
-                   "DONE $nf_finished, TO DO $n. NOW RUNNING " . scalar @proca . ".\n";
-         print_hash(" ", \%procf);
-         print "\n";
-      }
-      sleep ($SLEEP_PERIOD);
-   }
+		$i++;
+		my $t = time_get_total();
+		if ($i % $PRINT_PERIOD == 0) {
+			my $n = $nf_remaining - $nf_start_err;
+			printf "ELAPSED " . $t . "s. " .
+			  "CPU "    . sprintf("%3u", $cu) . "%%, " .
+				 "MEMORY " . sprintf("%3u", $mu) . "%%, " .
+					"DISK "   . sprintf("%3u", $du) . "%%, " .
+					  "SWAP "   . sprintf("%u",  $su) . "$un, " .
+						 "DONE $nf_finished, TO DO $n. NOW RUNNING " . scalar @proca . ".\n";
+			print_hash(" ", \%procf);
+			print "\n";
+	   }
+		sleep ($SLEEP_PERIOD);
+	}
 }
 
 #returns number of spawned processes which are still alive
 ###################################################################################
 sub proc_active_n {
-   return scalar @proca;
+	return scalar @proca;
 }
 
 #updates list of active processes by removing processes which have finished
 ###################################################################################
 sub proc_active_update {
-   my @ta;                      #temporary array
-   foreach my $proc (@proca) {
-      if ($proc->alive()) {
-         push (@ta, $proc);     #keep only alive processes
-      } else {
-         print "FINISHED pid: " . $proc->pid() . "\n";
-         delete $procf{$proc->pid()};
-         ++$nf_finished;
-         --$nf_remaining;
-      }
-   }
-   #make the main processor array keep only alive processes
-   @proca = @ta;
+	my @ta;							  #temporary array
+	foreach my $proc (@proca) {
+		if ($proc->alive()) {
+			push (@ta, $proc);	  #keep only alive processes
+		} else {
+			print "FINISHED pid: " . $proc->pid() . "\n";
+			delete $procf{$proc->pid()};
+			++$nf_finished;
+			--$nf_remaining;
+		}
+	}
+	#make the main processor array keep only alive processes
+	@proca = @ta;
 }
 
 
 #returns array of names of input files (or directories)
 #e.g. list of all xml files in ../bulk/assignments/ directory
 ###################################################################################
-sub get_input_list {
-   my ($dir,     #in: directory where files (or directories) habituate
-                 #e.g. ../bulk/assignments/
-       $match    #in: match string to recognize files
-                 #e.g. '.*xml$' (for ad20140204.xml)
-      ) = @_;
-   my @ta;                      #temporary array
-   opendir(DIR, $dir) or die "Error: can not open directory $dir.";
-   while ( my $l = readdir(DIR) ) {
-      if ($l =~ m/($match)/) {
-         push (@ta, $1);
-      }
-   }
+sub get_files_list {
+	my ($dir,	  #in: directory where files (or directories) habituate
+					  #e.g. ../bulk/assignments/
+		 $match	  #in: match string to recognize files
+					  #e.g. '.*xml$' (for ad20140204.xml)
+		) = @_;
+	my @ta;							  #temporary array
+	opendir(DIR, $dir) or die "Error: can not open directory $dir.";
+	while ( my $l = readdir(DIR) ) {
+		if ($l =~ m/($match)/) {
+			push (@ta, $1);
+		}
+	}
 
-   return @ta;
+	return @ta;
 }
 
 #returns total CPU utilization of all cores in %
 ###################################################################################
 sub util_cpu {
 
-   open (my $F, "/proc/stat") or die ("Cannot open /proc/stat\n");
-   my $at = do { local $/; <$F> }; #slurp All Text into a string
-   close ($F);
+	open (my $F, "/proc/stat") or die ("Cannot open /proc/stat\n");
+	my $at = do { local $/; <$F> }; #slurp All Text into a string
+	close ($F);
 
-   #grab just the first line with totals for all cores
-   my ($tc) = $at =~ m/cpu\s+(.*)\n/; #time columns: "32064297 57346 ..."
-   my @ta = split (/\s+/, $tc);       #array of times
+	#grab just the first line with totals for all cores
+	my ($tc) = $at =~ m/cpu\s+(.*)\n/; #time columns: "32064297 57346 ..."
+	my @ta = split (/\s+/, $tc);       #array of times
 
-   my $tt = sum(@ta);           #total time
-   my $ti = $ta[3];             #idle time
+	my $tt = sum(@ta);                 #total time
+	my $ti = $ta[3];                   #idle time
 
-   my $dtt = $tt - $cpu_prev_total; #total time since the last time
-   my $dti = $ti - $cpu_prev_idle;  #idle time since the last time
+	my $dtt = $tt - $cpu_prev_total;   #total time since the last time
+	my $dti = $ti - $cpu_prev_idle;    #idle time since the last time
 
-   my $u = $cpu_prev_usage;     #cpu usage
-   if ($dtt) {                  #avoid division with 0
-      $u = (($dtt - $dti) / $dtt) * 100;
-   }
+	my $u = $cpu_prev_usage;          #cpu usage
+	if ($dtt) { #avoid division with 0
+		$u = (($dtt - $dti) / $dtt) * 100;
+	}
 
-   $cpu_prev_usage = $u;
-   $cpu_prev_total = $tt;
-   $cpu_prev_idle  = $ti;
+	$cpu_prev_usage = $u;
+	$cpu_prev_total = $tt;
+	$cpu_prev_idle  = $ti;
 
-   #printf "CPU utilization: $u";
-   return $u;
+	#printf "CPU utilization: $u";
+	return $u;
 }
 
 #returns:
@@ -339,49 +404,51 @@ sub util_cpu {
 #  amount of swap used and unit of measure (kB, mB)..
 ###################################################################################
 sub util_mem {
-   my ($mt, $mf, $mc, $st, $sf) = 0; #memory total, memory free, memory cached
-                                     #swap total, swap free
-   my $un;                 #unit for measuring swap memory (kB, mB...)
+	my ($mt, $mf, $mc, $st, $sf) = 0; #memory total, memory free, memory cached
+	                                  #swap total, swap free
+	my $un;						#unit for measuring swap memory (kB, mB...)
 
-   open (my $F, "/proc/meminfo") or die ("Cannot open /proc/meminfo\n");
-   my $at = do { local $/; <$F> }; #slurp All Text into a string
-   close ($F);
+	open (my $F, "/proc/meminfo") or die ("Cannot open /proc/meminfo\n");
+	my $at = do { local $/; <$F> }; #slurp All Text into a string
+	close ($F);
 
-   ($mt, $mf, $mc, $st, $sf, $un) =
-     $at =~ m/MemTotal:\s*(\d+)\s.*MemFree:\s*(\d+)\s.*\nCached:\s*(\d+)\s.*\nSwapTotal:\s*(\d+)\s.*\nSwapFree:\s*(\d+)\s([a-zA-Z]*)\n/s;
-   #print "mem tot $mt, mem free $mf mem cached $mc, swap total $st $un, " .
-   #  "swap free $sf $un\n";
+	($mt, $mf, $mc, $st, $sf, $un) =
+	  $at =~ m/MemTotal:\s*(\d+)\s.*MemFree:\s*(\d+)\s.*\nCached:\s*(\d+)\s.*\nSwapTotal:\s*(\d+)\s.*\nSwapFree:\s*(\d+)\s([a-zA-Z]*)\n/s;
+	#print "mem tot $mt, mem free $mf mem cached $mc, swap total $st $un, " .
+	#  "swap free $sf $un\n";
 
-   my $mu = 100;                #memory usage
-   if ($mt) {
-      $mu = 100*(($mt - $mf - $mc)/$mt);
-   }
+	my $mu = 100;					  #memory usage
+	if ($mt) {
+		$mu = 100*(($mt - $mf - $mc)/$mt);
+	}
 
-   my $su = $st - $sf;
+	my $su = $st - $sf;
 
-   #print "memory utilization $mu, swap used: $su $un\n";
+	#print "memory utilization $mu, swap used: $su $un\n";
 
-   return ($mu, $su, $un);
+	return ($mu, $su, $un);
 }
 
 #returns highest disk utilization in % (of all disks)
 ###################################################################################
 sub util_disk {
 
-   open (my $F, "iostat -dx |") or die ("Cannot open iostat\n");
+	open (my $F, "iostat -dx |") or die ("Cannot open iostat\n");
 
-   my $hdu = 0;                 #highest disk utilization
-   my $du  = 0;                 #disk utilization
-   while (<$F>) {
-      if (/\s([\d\.]+)$/) {
-         $hdu = $1 > $hdu ? $1 : $hdu;
-      }
-   }
-   close($F);
+	my $hdu = 0;					  #highest disk utilization
+	my $du  = 0;					  #disk utilization
+	while (<$F>) {
+		if (/\s([\d\.]+)$/) {
+			$hdu = $1 > $hdu ? $1 : $hdu;
+		}
+	}
+	close($F);
 
-   #print "highest disk utilization: $hdu\n";
-   return $hdu;
+	#print "highest disk utilization: $hdu\n";
+	return $hdu;
 }
+
+
 
 
 
